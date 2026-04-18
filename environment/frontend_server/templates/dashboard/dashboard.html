@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% load staticfiles %}
+
+{% block content %}
+
+<style>
+  body { background-color: #1a1a2e !important; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+  .dashboard-container { width: 90%; max-width: 1400px; margin: 2em auto; }
+  .dashboard-title { text-align: center; font-size: 2.2em; margin-bottom: 0.3em; color: #00d4ff; }
+  .dashboard-subtitle { text-align: center; font-size: 1em; color: #888; margin-bottom: 2em; }
+  .panel { background: #16213e; border-radius: 12px; padding: 1.5em; margin-bottom: 1.5em; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+  .panel h3 { color: #00d4ff; margin-top: 0; border-bottom: 1px solid #0f3460; padding-bottom: 0.5em; }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1em; margin-bottom: 1.5em; }
+  .stat-card { background: #0f3460; border-radius: 8px; padding: 1em; text-align: center; }
+  .stat-card .value { font-size: 2em; font-weight: bold; color: #00d4ff; }
+  .stat-card .label { font-size: 0.85em; color: #aaa; margin-top: 0.3em; }
+  .mood-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
+  .mood-positive { background: #0a6e3a; color: #4ade80; }
+  .mood-neutral { background: #4a4a00; color: #fbbf24; }
+  .mood-negative { background: #7f1d1d; color: #f87171; }
+  .rel-table { width: 100%; border-collapse: collapse; }
+  .rel-table th, .rel-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #0f3460; }
+  .rel-table th { color: #00d4ff; }
+  .rel-bar { height: 8px; border-radius: 4px; background: #0f3460; }
+  .rel-bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #00d4ff, #7c3aed); }
+  #status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5em; }
+  @media (max-width: 800px) { .chart-row { grid-template-columns: 1fr; } }
+  canvas { max-height: 300px; }
+</style>
+
+<div class="dashboard-container">
+  <h1 class="dashboard-title">🧠 Affective Agents Dashboard</h1>
+  <p class="dashboard-subtitle">
+    <span id="status-dot" style="background:#fbbf24"></span>
+    Simulation: <strong>{{ sim_code }}</strong> |
+    <span id="meta-time">Loading...</span> |
+    Step: <span id="meta-step">-</span> |
+    Auto-refreshes every 5s
+  </p>
+
+  <!-- STAT CARDS -->
+  <div class="stats-grid" id="stats-grid"></div>
+
+  <!-- CHARTS -->
+  <div class="chart-row">
+    <div class="panel">
+      <h3>📈 Mood Over Time</h3>
+      <canvas id="moodChart"></canvas>
+    </div>
+    <div class="panel">
+      <h3>💬 Conversations Today</h3>
+      <canvas id="convoChart"></canvas>
+    </div>
+  </div>
+
+  <!-- RELATIONSHIP TABLE -->
+  <div class="panel">
+    <h3>🤝 Relationship Network</h3>
+    <table class="rel-table" id="rel-table">
+      <thead><tr><th>Agent A</th><th>Agent B</th><th>Strength</th><th></th></tr></thead>
+      <tbody id="rel-tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- AGENT DETAILS -->
+  <div class="panel">
+    <h3>🎭 Agent Details</h3>
+    <div id="agent-details"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+const SIM_CODE = "{{ sim_code }}";
+let moodChart = null;
+let convoChart = null;
+
+const COLORS = [
+  'rgba(0, 212, 255, 1)',
+  'rgba(124, 58, 237, 1)',
+  'rgba(251, 191, 36, 1)',
+  'rgba(74, 222, 128, 1)',
+  'rgba(248, 113, 113, 1)',
+  'rgba(251, 146, 60, 1)',
+];
+
+function getMoodBadge(mood) {
+  if (mood > 0.1) return `<span class="mood-badge mood-positive">😊 ${mood.toFixed(2)}</span>`;
+  if (mood < -0.1) return `<span class="mood-badge mood-negative">😟 ${mood.toFixed(2)}</span>`;
+  return `<span class="mood-badge mood-neutral">😐 ${mood.toFixed(2)}</span>`;
+}
+
+function buildStatCards(data) {
+  const grid = document.getElementById('stats-grid');
+  grid.innerHTML = '';
+  const personas = data.personas || {};
+  const names = Object.keys(personas);
+
+  names.forEach((name, i) => {
+    const p = personas[name];
+    const card = document.createElement('div');
+    card.className = 'stat-card';
+    card.innerHTML = `
+      <div class="label">${name}</div>
+      <div class="value">${getMoodBadge(p.mood)}</div>
+      <div class="label">Convos: ${p.convo_count_today} | Memories: ${p.memory_count}</div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+function buildMoodChart(data) {
+  const ctx = document.getElementById('moodChart').getContext('2d');
+  const personas = data.personas || {};
+  const names = Object.keys(personas);
+
+  const datasets = names.map((name, i) => {
+    const history = personas[name].mood_history || [];
+    return {
+      label: name,
+      data: history.map(h => ({x: h[0], y: h[1]})),
+      borderColor: COLORS[i % COLORS.length],
+      backgroundColor: COLORS[i % COLORS.length].replace('1)', '0.1)'),
+      tension: 0.3,
+      pointRadius: 1,
+      borderWidth: 2,
+      fill: false,
+    };
+  });
+
+  const labels = datasets.length > 0 && datasets[0].data.length > 0
+    ? datasets[0].data.map(d => d.x) : [];
+
+  if (moodChart) moodChart.destroy();
+  moodChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: labels, datasets: datasets.map(ds => ({...ds, data: ds.data.map(d => d.y)})) },
+    options: {
+      responsive: true,
+      scales: {
+        y: { min: -1, max: 1, grid: {color: '#0f3460'}, ticks: {color: '#aaa'} },
+        x: { grid: {color: '#0f3460'}, ticks: {color: '#aaa', maxTicksLimit: 15} }
+      },
+      plugins: { legend: { labels: { color: '#e0e0e0' } } }
+    }
+  });
+}
+
+function buildConvoChart(data) {
+  const ctx = document.getElementById('convoChart').getContext('2d');
+  const personas = data.personas || {};
+  const names = Object.keys(personas);
+  const counts = names.map(n => personas[n].convo_count_today || 0);
+
+  if (convoChart) convoChart.destroy();
+  convoChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: names,
+      datasets: [{
+        label: 'Conversations Today',
+        data: counts,
+        backgroundColor: names.map((_, i) => COLORS[i % COLORS.length].replace('1)', '0.6)')),
+        borderColor: names.map((_, i) => COLORS[i % COLORS.length]),
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        y: { beginAtZero: true, grid: {color: '#0f3460'}, ticks: {color: '#aaa', stepSize: 1} },
+        x: { grid: {color: '#0f3460'}, ticks: {color: '#aaa'} }
+      },
+      plugins: { legend: { display: false } }
+    }
+  });
+}
+
+function buildRelTable(data) {
+  const tbody = document.getElementById('rel-tbody');
+  tbody.innerHTML = '';
+  const personas = data.personas || {};
+  const seen = new Set();
+
+  for (const [name, pdata] of Object.entries(personas)) {
+    const rels = pdata.relationship_scores || {};
+    for (const [other, score] of Object.entries(rels)) {
+      const key = [name, other].sort().join('|');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const pct = Math.round(score * 100);
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td>${name}</td>
+        <td>${other}</td>
+        <td>${score.toFixed(2)}</td>
+        <td style="width:40%"><div class="rel-bar"><div class="rel-bar-fill" style="width:${pct}%"></div></div></td>
+      `;
+      tbody.appendChild(row);
+    }
+  }
+  if (seen.size === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:#888">No relationships yet. Run the simulation and agents will form relationships through conversations.</td></tr>';
+  }
+}
+
+function buildAgentDetails(data) {
+  const container = document.getElementById('agent-details');
+  container.innerHTML = '';
+  const personas = data.personas || {};
+  for (const [name, p] of Object.entries(personas)) {
+    const div = document.createElement('div');
+    div.style.cssText = 'margin-bottom:1em; padding:0.8em; background:#0f3460; border-radius:8px;';
+    div.innerHTML = `
+      <strong style="color:#00d4ff">${name}</strong> ${getMoodBadge(p.mood)}
+      <span style="color:#888; margin-left:1em">Baseline: ${p.mood_baseline.toFixed(2)}</span><br>
+      <span style="color:#aaa; font-size:0.9em">
+        📝 ${p.current_action} |
+        🧠 ${p.memory_count} memories (${p.thought_count} thoughts, ${p.event_count} events, ${p.chat_count} chats)
+      </span>
+    `;
+    container.appendChild(div);
+  }
+}
+
+function fetchAndUpdate() {
+  fetch(`/api/metrics/${SIM_CODE}/`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        document.getElementById('meta-time').textContent = data.error;
+        document.getElementById('status-dot').style.background = '#f87171';
+        return;
+      }
+      document.getElementById('meta-time').textContent = data.curr_time || '';
+      document.getElementById('meta-step').textContent = data.step || '-';
+      document.getElementById('status-dot').style.background = '#4ade80';
+
+      buildStatCards(data);
+      buildMoodChart(data);
+      buildConvoChart(data);
+      buildRelTable(data);
+      buildAgentDetails(data);
+    })
+    .catch(err => {
+      document.getElementById('status-dot').style.background = '#f87171';
+      console.error('Dashboard fetch error:', err);
+    });
+}
+
+// Initial fetch + auto-refresh every 5 seconds
+fetchAndUpdate();
+setInterval(fetchAndUpdate, 5000);
+</script>
+
+{% endblock content %}
